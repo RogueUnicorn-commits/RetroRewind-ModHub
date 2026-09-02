@@ -1,199 +1,132 @@
 # RetroRewind ModHub
 
-RetroRewind ModHub is a Windows desktop application for managing and working with RetroRewind mods, assets, saves, and related tools from a single interface.
+RetroRewind ModHub is a Windows desktop application for managing mods and related game-development/modding workflows.
 
-## Current Version
+The project is currently maintained as a .NET 10 WPF application targeting Windows x64.
 
-**1.0.3**
-
-This repository reflects the current 1.0.3 source baseline.
-
-## Features
+## Current Features
 
 ### Mod Management
-
-* Enable and disable mods
-* Install and remove mods
-* Import and export mod content
-* Required-file checking
-* Conflict checking
-* Mod information and validation
-* Mod organization and management
+- Browse and manage locally installed mods.
+- Install and remove mod content.
+- Organize mod files and related game content.
+- Validate mod installations and identify common issues.
 
 ### Asset Workshop
-
-* Work with RetroRewind assets
-* Import and manage images
-* Transfer assets
-* Save and restore asset information
-* Open relevant save folders
+- Work with supported Unreal Engine/game assets.
+- Inspect and manage asset-related content used by supported workflows.
 
 ### Save Management
-
-* Manage RetroRewind save data
-* Open save folders
-* Transfer save-related content
-* Save and restore information
+- Manage supported save-game files.
+- Create and work with local save backups.
 
 ### Video Tools
-
-* Video management and playback tools
-* MP4 selection and processing
-* Video editor controls
-* Video download functionality
-* Poster and video-related asset handling
+- Tools for supported video/media workflows used by the project.
 
 ### Merge Mods
-
-Tools for working with and merging mod content.
+- Combine supported mod content through the application's merge workflow.
 
 ### Health & Validation
-
-Built-in tools for checking project/mod state and identifying invalid or conflicting content.
+- Validate project/mod content.
+- Surface errors and warnings to help diagnose installation problems.
 
 ### Nexus Mods Integration
+The application includes an existing Nexus Mods integration layer for supported account and mod-management operations, including:
+- User/account validation.
+- Tracked mods.
+- Mod endorsements.
+- Nexus mod metadata.
+- Mod file lists.
+- Downloads and download links.
+- MD5 lookup.
+- Opening Nexus Mods pages.
+- Nexus SSO groundwork.
 
-The current version contains Nexus Mods integration for supported functionality, including:
-
-* Nexus user validation
-* Tracked mods
-* Mod information
-* Mod file information
-* Downloads
-* Download links
-* MD5-based file lookup
-* Endorsements
-* Nexus page access
-* Nexus SSO groundwork
-
-Nexus authentication and API functionality are implemented in the current source and are subject to the requirements and policies of Nexus Mods.
+The Nexus integration is designed around user-initiated actions and locally protected credentials. Further API/SSO capabilities are subject to Nexus Mods approval and API requirements.
 
 ### Steam Integration
-
-The application includes Steam-related verification and local credential handling functionality.
+- Supported Steam account/game-related functionality used by the application.
+- Local credential protection is used where credentials are required.
 
 ### Localization
-
-RetroRewind ModHub includes localization resources for multiple languages, including:
-
-* Arabic
-* Bulgarian
-* Chinese Simplified
-* Chinese Traditional
-* Croatian
-* Czech
-* Danish
-* Dutch
-* English
-* Finnish
-* French
-* German
-* Greek
-* Hebrew
-* Hungarian
-* Italian
-* Japanese
-* Korean
-* Norwegian
-* Polish
-* Portuguese
-* Portuguese (Brazil)
-* Romanian
-* Russian
-* Slovak
-* Slovenian
-* Spanish
-* Swedish
-* Turkish
-* Ukrainian
+The project includes localization resources for supported languages.
 
 ## Requirements
 
-The project targets:
-
-* Windows
-* x64
-* .NET 10
-* WPF
-
-The release configuration is designed for Windows self-contained deployment.
+- Windows x64
+- .NET 10 / Windows Desktop runtime as required by the selected build configuration
+- A supported installation of the target game(s) for the relevant mod-management features
 
 ## Building
 
-The repository contains build scripts for Windows releases.
+The project can be built using the included build scripts or from Visual Studio / the .NET CLI.
 
-Relevant scripts include:
+The primary project file is:
 
-```text
-build_windows.bat
-build_release.bat
-BuildRelease.cmd
-```
+`RetroRewindModhub.csproj`
 
-The project file is:
+The repository includes a release build script:
 
-```text
-RetroRewindModhub.csproj
-```
-
-A compatible .NET 10 SDK is required to build the project.
+`build_release.bat`
 
 ## Project Structure
 
-```text
-RetroRewindModhub/
-├── Assets/                 Application images, icons and fonts
-├── Documentation/          Project documentation
-├── Engine/                 Supporting engine functionality
-├── Localization/           Localization resources
-├── Tools/                  Supporting tools
-├── App.xaml                WPF application definition
-├── MainWindow.xaml         Main application window
-├── MainWindow_*.cs         Main application functionality
-├── Nexus*.cs               Nexus Mods integration
-├── Steam*.cs               Steam integration
-├── RetroRewindModhub.csproj
-└── build_*.bat             Build scripts
-```
+Key areas of the project include:
+
+- `RetroRewindModhub.csproj` — main WPF project
+- `MainWindow_*.cs` — application UI and feature modules
+- `Nexus*.cs` — Nexus Mods integration
+- `SteamSecretStore.cs` — local Steam credential protection
+- `AccountProfileCache.cs` — local account/profile caching
+- `Localization/` — localization resources
+- `Documentation/` — project documentation and handoff information
+- `build_release.bat` — release build helper
 
 ## Source Control
 
-The repository uses Git.
+The stable 1.0.3 baseline is maintained on the `main` branch.
 
-### Branches
-
-`main` represents the stable project baseline.
-
-`development` is used for ongoing development.
-
-Feature work should be developed separately and merged into `development` when appropriate.
+The `development` branch is used for ongoing development work.
 
 ## Security
 
-Local credentials and generated files are intentionally excluded from source control.
+Local credentials and secrets should never be committed to source control.
 
-The repository's `.gitignore` excludes local credential files, build output, downloads, and other machine-specific data.
+The repository's `.gitignore` excludes local credential/configuration files such as:
 
-**Never commit API keys, passwords, authentication tokens, or other private credentials to this repository.**
+- `nexus_api_key.dat`
+- `.env` files
+- `secrets.json`
+- credential/configuration files
+- local download folders
+- build output
+
+Nexus credentials stored by the application use Windows-provided protection mechanisms rather than storing the user's API key directly in source code.
 
 ## Third-Party Components
 
-RetroRewind ModHub includes or uses third-party components and assets. Their respective license files and notices are retained in the repository where applicable.
+RetroRewind ModHub uses third-party libraries, frameworks, fonts, and other components. Those components remain subject to their respective licenses and notices.
 
-Font license files are located under:
+Notable project dependencies include libraries distributed under licenses such as MIT, Apache-2.0, and BSD-3-Clause. Third-party license files/notices included with the project must be preserved where applicable.
 
-```text
-Assets/Fonts/
-```
+The MIT license in the root `LICENSE` file applies to the original RetroRewind ModHub code authored by the project copyright holder. It does **not** replace or relicense third-party components.
 
-## Status
+## License
 
-**Version 1.0.3 — Current baseline**
+RetroRewind ModHub's original source code is licensed under the **MIT License**.
 
-This README describes the application as it exists in the 1.0.3 source baseline. Features not present in the current release are intentionally not described as implemented.
+See the [`LICENSE`](LICENSE) file for the complete license text.
 
-## Credits
+Third-party libraries, fonts, assets, and other components remain under their respective licenses.
 
-RetroRewind ModHub is developed as part of the RetroRewind project.
+## Nexus Mods
 
-Third-party software, assets, fonts, and services remain the property of their respective authors and are subject to their applicable licenses and terms.
+Nexus Mods integration is included for supported functionality, but the project does not claim to be an official Nexus Mods product.
+
+Any future public API, OAuth/SSO, download, or automatic-update functionality will be implemented only in accordance with the applicable Nexus Mods policies, API requirements, and approval where required.
+
+## Project Status
+
+RetroRewind ModHub 1.0.3 is an active development project.
+
+The repository is being made available so that the project can be reviewed and development can continue in an open and documented manner.
