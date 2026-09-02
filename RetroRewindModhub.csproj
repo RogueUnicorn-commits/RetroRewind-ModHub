@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Compile Remove="Documentation\**\*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>RetroRewindModhub</AssemblyName>
+    <Product>Retro Rewind Modhub</Product>
+    <AssemblyTitle>Retro Rewind Modhub</AssemblyTitle>
+    <AssemblyVersion>1.0.3.0</AssemblyVersion>
+    <FileVersion>1.0.3.0</FileVersion>
+    <InformationalVersion>1.0.3</InformationalVersion>
+    <ApplicationIcon>Assets\RetroRewindModHub.ico</ApplicationIcon>
+    <RootNamespace>RogueUnicorn.Modhub</RootNamespace>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <PublishTrimmed>false</PublishTrimmed>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
+    <PackageReference Include="SharpVectors.Wpf" Version="1.8.5" />
+    <PackageReference Include="LibVLCSharp.WPF" Version="3.10.1" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
+    <PackageReference Include="Unpaker" Version="1.1.0" />
+    <PackageReference Include="UAssetAPI" Version="1.1.0" />
+    <PackageReference Include="CUE4Parse" Version="1.2.2.202608" />
+    <PackageReference Include="CUE4Parse-Conversion" Version="1.2.2.202608" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
+    <PackageReference Include="SharpCompress" Version="0.50.4" />
+    <PackageReference Include="System.Diagnostics.PerformanceCounter" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="invalid.txt" />
+    <Resource Include="Assets\*.png" />
+    <Resource Include="Assets\*.ico" />
+    <Resource Include="Assets\Fonts\*.otf" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Engine\engine.py"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="Always"
+          TargetPath="RetroRewindModHub_Data\Engine\engine.py" />
+    <None Include="Engine\vanilla_store_style.json"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="Always"
+          TargetPath="RetroRewindModHub_Data\Engine\vanilla_store_style.json" />
+
+  </ItemGroup>
+  <ItemGroup><Content Include="Localization\**\*.json" CopyToOutputDirectory="PreserveNewest" TargetPath="RetroRewindModHub_Data\Localization\%(RecursiveDir)%(Filename)%(Extension)" /></ItemGroup>
+</Project>

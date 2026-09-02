@@ -1,0 +1,816 @@
+        SetPosterBrowserListInteractivity(true);
+
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var rules = ReadPosterRules(mod);
+
+            _mode = "poster_browser";
+            UpdateMode();
+            SetOperationBusy(true, L("Loading poster browser…"), null,
+                L("Reading the Posters folder. Images are loaded only when visible."));
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            await Task.Yield();
+
+            var option = rules.UseSubDirectories == true ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            // Show all image files in Posters, including unsupported/invalid formats, so they can be edited.
+            var posterFiles = Directory.EnumerateFiles(directory, "*.*", option)
+                .Where(IsEditableImageFile)
+                .ToList();
+            var sourceDir = GetPosterSourceDirectory(mod);
+            var sourceFiles = Directory.Exists(sourceDir)
+                ? Directory.EnumerateFiles(sourceDir, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(IsEditableImageFile)
+                    .ToList()
+                : new List<string>();
+            _posterBrowserFiles = posterFiles.Concat(sourceFiles)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(f => IsSourcePosterFile(f) ? 0 : 1)
+                .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            BuildPosterBrowserCards(rules);
+            SetOperationBusy(false);
+            await Dispatcher.InvokeAsync(() => LoadVisiblePosterImages(), DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            SetOperationBusy(false);
+            MessageBox.Show(this, L("Could not open the poster browser.\n\n{0}", ex.Message),
+                L("View Images"), MessageBoxButton.OK, MessageBoxImage.Error);
+            _mode = "mods";
+            UpdateMode();
+        }
+    }
+
+    private void BuildPosterBrowserCards(PosterRules rules)
+    {
+        if (PosterBrowserItemsPanel == null || PosterBrowserScrollViewer == null)
+            return;
+
+        PosterBrowserItemsPanel.Children.Clear();
+        _posterBrowserImageControls.Clear();
+
+        var classified = _posterBrowserFiles
+            .Select(file =>
+            {
+                string reason = string.Empty;
+                bool valid;
+                if (IsSourcePosterFile(file))
+                {
+                    valid = false;
+                    reason = L("Source image. Edit it to create a valid poster.");
+                }
+                else
+                {
+                    valid = IsValidPosterImage(file, rules, out reason, _posterBrowserMod);
+                }
+                return new { File = file, Valid = valid, Reason = reason };
+            })
+            .OrderBy(x => x.Valid) // Invalid images first.
+            .ThenBy(x => x.File, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var validCount = classified.Count(x => x.Valid);
+        var invalidCount = classified.Count - validCount;
+        _posterBrowserFiles = classified.Select(x => x.File).ToList();
+
+        foreach (var item in classified)
+        {
+            var file = item.File;
+            var card = new Border
+            {
+                Width = 188,
+                Height = 304,
+                Margin = new Thickness(7),
+                Padding = new Thickness(8),
+                Background = (Brush)Resources["ButtonBackgroundBrush"],
+                BorderBrush = (Brush)Resources["BorderBrush"],
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Tag = file,
+                Cursor = System.Windows.Input.Cursors.Hand,
+                ToolTip = L("Select {0}", Path.GetFileName(file))
+            };
+
+            var panel = new Grid();
+            panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(210) });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var previewHost = new Border
+            {
+                Background = (Brush)Resources["InputBackgroundBrush"],
+                CornerRadius = new CornerRadius(5),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch
+            };
+            var preview = new Image
+            {
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Width = 164,
+                Height = 206,
+                Tag = file,
+                IsHitTestVisible = false
+            };
+            previewHost.Child = preview;
+            panel.Children.Add(previewHost);
+
+            var name = new TextBlock
+            {
+                Text = Path.GetFileNameWithoutExtension(file),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = (Brush)Resources["ForegroundBrush"],
+                Margin = new Thickness(2, 7, 2, 0),
+                ToolTip = file
+            };
+            Grid.SetRow(name, 1);
+            panel.Children.Add(name);
+
+            var statusPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(2, 5, 2, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var statusIconSource = LoadModIcon(item.Valid ? "valid.png" : "Invalid.png");
+            var statusIcon = new Border
+            {
+                Width = 18,
+                Height = 18,
+                Background = (Brush)Resources["AccentBrush"],
+                OpacityMask = new ImageBrush(statusIconSource) { Stretch = Stretch.Uniform },
+                ToolTip = item.Valid ? L("Valid poster") : L("Invalid poster")
+            };
+            statusPanel.Children.Add(statusIcon);
+            Grid.SetRow(statusPanel, 2);
+            panel.Children.Add(statusPanel);
+
+            var selectHint = new TextBlock
+            {
+                Text = L("Click for details"),
+                Foreground = (Brush)Resources["SecondaryBrush"],
+                FontSize = 10,
+                Margin = new Thickness(2, 4, 2, 0)
+            };
+            Grid.SetRow(selectHint, 3);
+            panel.Children.Add(selectHint);
+
+            card.Child = panel;
+            card.MouseEnter += (_, _) =>
+            {
+                card.Background = (Brush)Resources["AccentHoverBrush"];
+                card.BorderBrush = (Brush)Resources["AccentBrush"];
+                card.RenderTransform = new TranslateTransform(0, -1);
+            };
+            card.MouseLeave += (_, _) =>
+            {
+                card.Background = (Brush)Resources["ButtonBackgroundBrush"];
+                card.BorderBrush = (Brush)Resources["BorderBrush"];
+                card.RenderTransform = null;
+            };
+            card.AddHandler(UIElement.PreviewMouseLeftButtonUpEvent, new MouseButtonEventHandler((_, e) =>
+            {
+                if (e.ChangedButton != MouseButton.Left)
+                    return;
+
+                if (_posterBrowserSelectedFile != null && PosterBrowserSelectedPanel?.Visibility == Visibility.Visible)
+                {
+                    CollapseSelectedPosterPanel();
+                    e.Handled = true;
+                    return;
+                }
+
+                SelectPosterBrowserImage(file);
+                e.Handled = true;
+            }), true);
+
+            _posterBrowserImageControls[file] = preview;
+            PosterBrowserItemsPanel.Children.Add(card);
+        }
+
+        PosterBrowserInfo.Text = L("{0} image(s) found • {1} invalid • {2} valid poster(s) • Maximum: {3}",
+            _posterBrowserFiles.Count, invalidCount, validCount, rules.MaxFiles?.ToString() ?? L("Not specified"));
+        PosterBrowserScrollViewer.ScrollToHome();
+    }
+
+    private void LoadVisiblePosterImages()
+    {
+        if (PosterBrowserScrollViewer == null || _posterBrowserFiles.Count == 0) return;
+
+        // Cards are fixed-height; load a generous viewport window around the current scroll position.
+        var columns = Math.Max(1, (int)(PosterBrowserScrollViewer.ViewportWidth / 202));
+        var rowHeight = 308d;
+        var firstRow = Math.Max(0, (int)(PosterBrowserScrollViewer.VerticalOffset / rowHeight) - 1);
+        var lastRow = Math.Min((int)Math.Ceiling((double)_posterBrowserFiles.Count / columns),
+            firstRow + (int)Math.Ceiling(PosterBrowserScrollViewer.ViewportHeight / rowHeight) + 2);
+        var start = firstRow * columns;
+        var end = Math.Min(_posterBrowserFiles.Count, lastRow * columns);
+
+        for (var i = start; i < end; i++)
+        {
+            var file = _posterBrowserFiles[i];
+            if (_posterBrowserImageControls.TryGetValue(file, out var image) && image.Source == null)
+                _ = LoadPosterThumbnailAsync(file, image);
+        }
+    }
+
+    private async Task LoadPosterThumbnailAsync(string file, Image image)
+    {
+        if (!_posterBrowserLoading.Add(file)) return;
+        try
+        {
+            
+            var bytes = await File.ReadAllBytesAsync(file);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!File.Exists(file)) return;
+                using var stream = new MemoryStream(bytes, false);
+                var source = new BitmapImage();
+                source.BeginInit();
+                source.CacheOption = BitmapCacheOption.OnLoad;
+                source.DecodePixelWidth = 164;
+                source.StreamSource = stream;
+                source.EndInit();
+                source.Freeze();
+                image.Source = source;
+            }, DispatcherPriority.Background);
+        }
+        catch { }
+        finally { _posterBrowserLoading.Remove(file); }
+    }
+
+    private async Task ReloadPosterBrowserAsync()
+    {
+        if (_posterBrowserMod == null) return;
+        await ViewPosterImagesAsync(_posterBrowserMod);
+    }
+
+    private void PosterBrowserScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        LoadVisiblePosterImages();
+    }
+
+    private void SelectPosterBrowserImage(string file)
+    {
+        if (!File.Exists(file))
+            return;
+
+        _posterBrowserSelectedFile = file;
+        PosterBrowserSelectedPanel.Visibility = Visibility.Visible;
+        SetPosterBrowserListInteractivity(false);
+        PosterBrowserSelectedPanel.Opacity = 0;
+        PosterBrowserSelectedPanel.MaxHeight = 0;
+
+        PopulateSelectedPosterDetails(file);
+
+        var maxHeight = 340d;
+        var animation = new DoubleAnimation(0, maxHeight, TimeSpan.FromMilliseconds(220))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        PosterBrowserSelectedPanel.BeginAnimation(MaxHeightProperty, animation);
+        PosterBrowserSelectedPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
+
+        _posterBrowserSelectedLoadCts?.Cancel();
+        _posterBrowserSelectedLoadCts = new CancellationTokenSource();
+        _ = LoadSelectedPosterPreviewAsync(file, _posterBrowserSelectedLoadCts.Token);
+    }
+
+    private void PopulateSelectedPosterDetails(string file)
+    {
+        var rules = _posterBrowserMod != null ? ReadPosterRules(_posterBrowserMod) : new PosterRules();
+        string reason = string.Empty;
+        bool valid;
+        if (IsSourcePosterFile(file))
+        {
+            valid = false;
+            reason = L("Source image. Use Edit to crop, resize and convert it to the mod's poster format.");
+        }
+        else
+        {
+            valid = IsValidPosterImage(file, rules, out reason, _posterBrowserMod);
+        }
+        TryGetPosterDimensions(file, out var width, out var height);
+        var aspect = width > 0 ? (double)height / width : 0;
+        var info = new FileInfo(file);
+        var directory = Path.GetDirectoryName(file) ?? string.Empty;
+        var relativeDirectory = _posterBrowserDirectory != null
+            ? Path.GetDirectoryName(Path.GetRelativePath(_posterBrowserDirectory, file))
+            : string.Empty;
+
+        PosterBrowserSelectedFileName.Text = Path.GetFileNameWithoutExtension(file);
+        PosterBrowserSelectedPath.Text = directory;
+        PosterBrowserSelectedType.Text = Path.GetExtension(file).TrimStart('.').ToUpperInvariant();
+        PosterBrowserSelectedSize.Text = FormatPosterFileSize(info.Exists ? info.Length : 0);
+        PosterBrowserSelectedDimensions.Text = width > 0 && height > 0
+            ? $"{width} × {height}"
+            : L("Unavailable");
+        PosterBrowserSelectedAspect.Text = width > 0 ? aspect.ToString("0.###", CultureInfo.InvariantCulture) : L("Unavailable");
+        PosterBrowserSelectedRelative.Text = string.IsNullOrWhiteSpace(relativeDirectory) || relativeDirectory == "."
+            ? L("Root poster folder")
+            : relativeDirectory;
+        PosterBrowserSelectedModified.Text = info.Exists ? info.LastWriteTime.ToString("g") : L("Unavailable");
+        PosterBrowserSelectedStatus.Text = valid ? L("Valid poster") : L("Invalid poster");
+        PosterBrowserSelectedStatus.Foreground = valid
+            ? (Brush)Resources["SecondaryBrush"]
+            : (Brush)Resources["CoreUiRedBrush"];
+        PosterBrowserSelectedReason.Text = valid
+            ? L("This image meets the poster requirements.")
+            : reason;
+        // Valid posters do not need editing; invalid/source images expose the editor action.
+        PosterBrowserSelectedEditButton.Visibility = valid ? Visibility.Collapsed : Visibility.Visible;
+        var selectedStatusIconSource = LoadModIcon(valid ? "valid.png" : "Invalid.png");
+        PosterBrowserSelectedStatusIcon.Background = (Brush)Resources["AccentBrush"];
+        PosterBrowserSelectedStatusIcon.OpacityMask = new ImageBrush(selectedStatusIconSource) { Stretch = Stretch.Uniform };
+        PosterBrowserSelectedPreview.Source = null;
+        PosterBrowserSelectedPreview.ToolTip = Path.GetFileName(file);
+    }
+
+    private async Task LoadSelectedPosterPreviewAsync(string file, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (Path.GetExtension(file).Equals(".dds", StringComparison.OrdinalIgnoreCase))
+            {
+                await Dispatcher.InvokeAsync(() => PosterBrowserSelectedPreview.ToolTip = L("PNG image"));
+                return;
+            }
+
+            var bytes = await File.ReadAllBytesAsync(file, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (_posterBrowserSelectedFile == null || !string.Equals(_posterBrowserSelectedFile, file, StringComparison.OrdinalIgnoreCase))
+                    return;
+                using var stream = new MemoryStream(bytes, writable: false);
+                var source = new BitmapImage();
+                source.BeginInit();
+                source.CacheOption = BitmapCacheOption.OnLoad;
+                source.StreamSource = stream;
+                source.EndInit();
+                source.Freeze();
+                PosterBrowserSelectedPreview.Source = source;
+            }, DispatcherPriority.Background);
+        }
+        catch (OperationCanceledException) { }
+        catch
+        {
+            await Dispatcher.InvokeAsync(() => PosterBrowserSelectedPreview.ToolTip = L("Preview unavailable."));
+        }
+    }
+
+    private static string FormatPosterFileSize(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024d:0.##} KB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024d * 1024d):0.##} MB";
+        return $"{bytes / (1024d * 1024d * 1024d):0.##} GB";
+    }
+
+    private async void PosterBrowserSelectedDelete_Click(object? sender, RoutedEventArgs e)
+    {
+        var file = _posterBrowserSelectedFile;
+        if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
+            return;
+
+        var confirm = MessageBox.Show(this,
+            L("Delete this image permanently?\n\n{0}", Path.GetFileName(file)),
+            L("Delete Poster"), MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.Yes)
+            return;
+
+        try
+        {
+            SetOperationBusy(true, L("Deleting poster…"), null, Path.GetFileName(file));
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            await Task.Yield();
+            _posterBrowserSelectedLoadCts?.Cancel();
+            File.Delete(file);
+            _posterBrowserSelectedFile = null;
+            CollapseSelectedPosterPanel();
+            await ReloadPosterBrowserAsync();
+        }
+        catch (Exception ex)
+        {
+            SetOperationBusy(false);
+            MessageBox.Show(this, L("Could not delete the poster.\n\n{0}", ex.Message),
+                L("Delete Poster"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void PosterBrowserSelectedGoTo_Click(object? sender, RoutedEventArgs e)
+    {
+        var file = _posterBrowserSelectedFile;
+        if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
+            return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{file.Replace("\"", "") }\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, L("Could not open the file location.\n\n{0}", ex.Message),
+                L("Go To File"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void SetPosterBrowserListInteractivity(bool isInteractive)
+    {
+        if (PosterBrowserScrollViewer != null)
+        {
+            // The poster list must be completely static while details are open:
+            // no scrolling, hover, focus, keyboard navigation, or card clicks.
+            PosterBrowserScrollViewer.IsHitTestVisible = isInteractive;
+            PosterBrowserScrollViewer.Focusable = isInteractive;
+            KeyboardNavigation.SetIsTabStop(PosterBrowserScrollViewer, isInteractive);
+            PosterBrowserScrollViewer.PanningMode = isInteractive
+                ? PanningMode.VerticalOnly
+                : PanningMode.None;
+        }
+
+        if (PosterBrowserItemsPanel != null)
+            PosterBrowserItemsPanel.IsHitTestVisible = isInteractive;
+    }
+
+    private void CloseSelectedPosterPanelImmediately()
+    {
+        if (PosterBrowserSelectedPanel != null)
+        {
+            PosterBrowserSelectedPanel.BeginAnimation(MaxHeightProperty, null);
+            PosterBrowserSelectedPanel.BeginAnimation(OpacityProperty, null);
+            PosterBrowserSelectedPanel.Visibility = Visibility.Collapsed;
+            PosterBrowserSelectedPanel.Opacity = 1;
+        }
+
+        _posterBrowserSelectedLoadCts?.Cancel();
+        _posterBrowserSelectedFile = null;
+        SetPosterBrowserListInteractivity(true);
+    }
+
+    private void CollapseSelectedPosterPanel()
+    {
+        if (PosterBrowserSelectedPanel == null)
+        {
+            SetPosterBrowserListInteractivity(true);
+            return;
+        }
+
+        _posterBrowserSelectedLoadCts?.Cancel();
+        _posterBrowserSelectedFile = null;
+
+        if (PosterBrowserSelectedPanel.Visibility != Visibility.Visible)
+        {
+            PosterBrowserSelectedPanel.Visibility = Visibility.Collapsed;
+            PosterBrowserSelectedPanel.BeginAnimation(MaxHeightProperty, null);
+            PosterBrowserSelectedPanel.BeginAnimation(OpacityProperty, null);
+            SetPosterBrowserListInteractivity(true);
+            return;
+        }
+
+        var animation = new DoubleAnimation(PosterBrowserSelectedPanel.MaxHeight, 0, TimeSpan.FromMilliseconds(180));
+        animation.Completed += (_, _) =>
+        {
+            PosterBrowserSelectedPanel.Visibility = Visibility.Collapsed;
+            PosterBrowserSelectedPanel.BeginAnimation(MaxHeightProperty, null);
+            PosterBrowserSelectedPanel.BeginAnimation(OpacityProperty, null);
+            SetPosterBrowserListInteractivity(true);
+        };
+        PosterBrowserSelectedPanel.BeginAnimation(MaxHeightProperty, animation);
+        PosterBrowserSelectedPanel.BeginAnimation(OpacityProperty, new DoubleAnimation(PosterBrowserSelectedPanel.Opacity, 0, TimeSpan.FromMilliseconds(140)));
+    }
+
+    private void PosterBrowserSelectedEdit_Click(object? sender, RoutedEventArgs e)
+    {
+        var file = _posterBrowserSelectedFile;
+        if (string.IsNullOrWhiteSpace(file) || !File.Exists(file) || _posterBrowserMod == null)
+            return;
+
+        var rules = ReadPosterRules(_posterBrowserMod);
+        var valid = !IsSourcePosterFile(file) && IsValidPosterImage(file, rules, out _, _posterBrowserMod);
+        if (!valid)
+            OpenPosterImageEditor(file);
+    }
+
+    private async void PosterBrowserSelectedClose_Click(object? sender, RoutedEventArgs e)
+    {
+        CollapseSelectedPosterPanel();
+        await Task.CompletedTask;
+    }
+
+    private bool IsSourcePosterFile(string file)
+        => _posterBrowserMod != null && file.StartsWith(GetPosterSourceDirectory(_posterBrowserMod) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    private void OpenPosterImageEditor(string file)
+    {
+        if (_posterBrowserMod == null || !File.Exists(file)) return;
+
+        // The editor replaces the poster-detail view, so close the detail panel
+        // immediately rather than leaving it underneath/overlapping the editor.
+        CloseSelectedPosterPanelImmediately();
+
+        try
+        {
+            using var stream = File.OpenRead(file);
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.StreamSource = stream;
+            bitmap.EndInit();
+            bitmap.Freeze();
+
+            _posterImageEditorSourceFile = file;
+            _posterImageEditorSource = bitmap;
+            _posterImageEditorOffset = new Point(0, 0);
+            _posterImageEditorStartOffset = _posterImageEditorOffset;
+            PosterImageEditorSourceName.Text = Path.GetFileName(file);
+            PosterImageEditorResolutionCombo.ItemsSource = new[] { "1024 × 2048", "2048 × 4096", "4096 × 8192" };
+            PosterImageEditorResolutionCombo.SelectedIndex = 0;
+            PosterImageEditorZoomSlider.Value = 1;
+            PosterImageEditorImage.Source = bitmap;
+            _mode = "poster_image_editor";
+            UpdateMode();
+            UpdatePosterImageEditorTransform();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, L("Could not open the image editor.\n\n{0}", ex.Message), L("Image Editor"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    // Geometry from the supplied poster-compatible 1024x2048 texture.
+    // The white/custom-image area occupies X=22..1001 and Y=21..1685.
+    // The remaining pixels are unused space and stay black in the final poster.
+    private const double PosterTemplateWidth = 1024.0;
+    private const double PosterTemplateHeight = 2048.0;
+    private const double PosterContentX = 22.0;
+    private const double PosterContentY = 21.0;
+    private const double PosterContentWidth = 980.0;
+    private const double PosterContentHeight = 1665.0;
+
+    private void UpdatePosterImageEditorTransform()
+    {
+        if (PosterImageEditorImage == null || _posterImageEditorSource == null ||
+            PosterImageEditorCanvas == null || PosterImageEditorClipViewport == null ||
+            PosterImageEditorImageCanvas == null) return;
+
+        var stageWidth = PosterImageEditorCanvas.ActualWidth > 1 ? PosterImageEditorCanvas.ActualWidth : 680.0;
+        var stageHeight = PosterImageEditorCanvas.ActualHeight > 1 ? PosterImageEditorCanvas.ActualHeight : 820.0;
+
+        // The editor displays ONLY the usable image area from the real poster template.
+        // The unused black portion is deliberately omitted from the editor UI.
+        var contentScale = Math.Min(stageWidth / PosterContentWidth, stageHeight / PosterContentHeight);
+        if (contentScale <= 0) return;
+
+        var frameWidth = PosterContentWidth * contentScale;
+        var frameHeight = PosterContentHeight * contentScale;
+        var frameLeft = (stageWidth - frameWidth) / 2.0;
+        var frameTop = (stageHeight - frameHeight) / 2.0;
+
+        var sw = Math.Max(1, _posterImageEditorSource.PixelWidth);
+        var sh = Math.Max(1, _posterImageEditorSource.PixelHeight);
+        var zoom = Math.Max(1.0, PosterImageEditorZoomSlider.Value);
+
+        // Fit the complete source image to cover the usable frame. It is never cropped
+        // when opened; the clipping viewport merely hides pixels outside the usable area.
+        var fitScale = Math.Max(frameWidth / sw, frameHeight / sh);
+        var displayScale = fitScale * zoom;
+        var displayWidth = sw * displayScale;
+        var displayHeight = sh * displayScale;
+        var imageLeft = frameLeft + (frameWidth - displayWidth) / 2.0 + _posterImageEditorOffset.X;
+        var imageTop = frameTop + (frameHeight - displayHeight) / 2.0 + _posterImageEditorOffset.Y;
+
+        // No full-template/black background is rendered in the editor.
+        PosterImageEditorTemplateBackground.Visibility = Visibility.Collapsed;
+
+        PosterImageEditorClipViewport.Width = frameWidth;
+        PosterImageEditorClipViewport.Height = frameHeight;
+        PosterImageEditorClipViewport.Margin = new Thickness(frameLeft, frameTop, 0, 0);
+
+        PosterImageEditorImageCanvas.Width = frameWidth;
+        PosterImageEditorImageCanvas.Height = frameHeight;
+        PosterImageEditorImage.Width = displayWidth;
+        PosterImageEditorImage.Height = displayHeight;
+        PosterImageEditorImage.Margin = new Thickness(0);
+        PosterImageEditorImage.RenderTransform = null;
+        Canvas.SetLeft(PosterImageEditorImage, imageLeft - frameLeft);
+        Canvas.SetTop(PosterImageEditorImage, imageTop - frameTop);
+
+        PosterImageEditorFrame.Width = frameWidth;
+        PosterImageEditorFrame.Height = frameHeight;
+        PosterImageEditorFrame.HorizontalAlignment = HorizontalAlignment.Left;
+        PosterImageEditorFrame.VerticalAlignment = VerticalAlignment.Top;
+        PosterImageEditorFrame.Margin = new Thickness(frameLeft, frameTop, 0, 0);
+        PosterImageEditorFrameLabel.Margin = new Thickness(frameLeft + 6, frameTop + 8, 0, 0);
+    }
+
+    private void PosterImageEditorCanvas_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (_posterImageEditorSource != null)
+            UpdatePosterImageEditorTransform();
+    }
+
+    private void PosterImageEditorImage_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _posterImageEditorDragging = true;
+        _posterImageEditorDragStart = e.GetPosition(PosterImageEditorCanvas);
+        _posterImageEditorStartOffset = _posterImageEditorOffset;
+        PosterImageEditorImage.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void PosterImageEditorImage_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_posterImageEditorDragging) return;
+        var p = e.GetPosition(PosterImageEditorCanvas);
+        var d = p - _posterImageEditorDragStart;
+        _posterImageEditorOffset = new Point(_posterImageEditorStartOffset.X + d.X, _posterImageEditorStartOffset.Y + d.Y);
+        UpdatePosterImageEditorTransform();
+    }
+
+    private void PosterImageEditorImage_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        _posterImageEditorDragging = false;
+        if (PosterImageEditorImage.IsMouseCaptured) PosterImageEditorImage.ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void PosterImageEditorZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        UpdatePosterImageEditorTransform();
+    }
+
+    private void PosterImageEditorResetButton_Click(object sender, RoutedEventArgs e)
+    {
+        _posterImageEditorOffset = new Point(0, 0);
+        PosterImageEditorZoomSlider.Value = 1;
+        UpdatePosterImageEditorTransform();
+    }
+
+    private void PosterImageEditorBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod != null) _ = ViewPosterImagesAsync(_posterBrowserMod);
+    }
+
+    private async void PosterImageEditorSaveButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod == null || _posterImageEditorSource == null || string.IsNullOrWhiteSpace(_posterImageEditorSourceFile)) return;
+        var selected = PosterImageEditorResolutionCombo.SelectedItem?.ToString() ?? "1024 × 2048";
+        var parts = selected.Split('×', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 || !int.TryParse(parts[0], out var outW) || !int.TryParse(parts[1], out var outH)) return;
+
+        try
+        {
+            SetOperationBusy(true, L("Creating poster…"), null, L("Cropping, resizing, compressing to BC7 and generating mipmaps."));
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+            var source = _posterImageEditorSource;
+            var stageWidth = PosterImageEditorCanvas.ActualWidth > 1 ? PosterImageEditorCanvas.ActualWidth : 680.0;
+            var stageHeight = PosterImageEditorCanvas.ActualHeight > 1 ? PosterImageEditorCanvas.ActualHeight : 820.0;
+
+            // Use the same usable-area geometry shown in the editor. The editor omits
+            // the unused black template area, but the final poster is still rebuilt as
+            // the complete 1024x2048 template before being resized and encoded.
+            var contentScale = Math.Min(stageWidth / PosterContentWidth, stageHeight / PosterContentHeight);
+            var frameWidth = PosterContentWidth * contentScale;
+            var frameHeight = PosterContentHeight * contentScale;
+            var frameLeft = (stageWidth - frameWidth) / 2.0;
+            var frameTop = (stageHeight - frameHeight) / 2.0;
+
+            var sw = Math.Max(1, source.PixelWidth);
+            var sh = Math.Max(1, source.PixelHeight);
+            var zoom = Math.Max(1.0, PosterImageEditorZoomSlider.Value);
+            var fitScale = Math.Max(frameWidth / sw, frameHeight / sh);
+            var displayScale = fitScale * zoom;
+            var displayWidth = sw * displayScale;
+            var displayHeight = sh * displayScale;
+            var imageLeft = frameLeft + (frameWidth - displayWidth) / 2.0 + _posterImageEditorOffset.X;
+            var imageTop = frameTop + (frameHeight - displayHeight) / 2.0 + _posterImageEditorOffset.Y;
+
+            // Convert the visible frame rectangle back into source-image pixel coordinates.
+            var cropX = (frameLeft - imageLeft) / displayScale;
+            var cropY = (frameTop - imageTop) / displayScale;
+            var cropW = frameWidth / displayScale;
+            var cropH = frameHeight / displayScale;
+
+            // The source must cover the complete editable region. Nothing is cropped until Save.
+            if (cropW > sw + 0.01 || cropH > sh + 0.01)
+                throw new InvalidOperationException("The image does not cover the poster frame. Zoom in until the entire frame is covered, then save again.");
+
+            if (cropX < -0.01 || cropY < -0.01 || cropX + cropW > sw + 0.01 || cropY + cropH > sh + 0.01)
+                throw new InvalidOperationException("The image does not fully cover the poster frame. Reposition or zoom the image so no part of the frame is empty.");
+
+            var crop = new Int32Rect(
+                Math.Clamp((int)Math.Floor(cropX), 0, Math.Max(0, sw - 1)),
+                Math.Clamp((int)Math.Floor(cropY), 0, Math.Max(0, sh - 1)),
+                Math.Max(1, Math.Min(sw, (int)Math.Ceiling(cropW))),
+                Math.Max(1, Math.Min(sh, (int)Math.Ceiling(cropH))));
+
+            var cropped = new CroppedBitmap(source, crop);
+            cropped.Freeze();
+
+            // Build the complete poster-compatible texture at 1024x2048 first.
+            // The unused area remains black; the cropped custom image fills only the exact
+            // editable region from the supplied template. Texconv then scales the complete
+            // texture to the selected output resolution and encodes it as PNG poster.
+            var posterVisual = new DrawingVisual();
+            using (var dc = posterVisual.RenderOpen())
+            {
+                dc.DrawRectangle(Brushes.Black, null, new Rect(0, 0, PosterTemplateWidth, PosterTemplateHeight));
+                dc.DrawImage(cropped, new Rect(PosterContentX, PosterContentY, PosterContentWidth, PosterContentHeight));
+            }
+
+            var posterBitmap = new RenderTargetBitmap(
+                (int)PosterTemplateWidth, (int)PosterTemplateHeight, 96, 96, PixelFormats.Pbgra32);
+            posterBitmap.Render(posterVisual);
+            posterBitmap.Freeze();
+
+            var tempDir = Path.Combine(Path.GetTempPath(), "RetroRewindModHub", "PosterEditor");
+            Directory.CreateDirectory(tempDir);
+            var tempPng = Path.Combine(tempDir, Guid.NewGuid().ToString("N") + ".png");
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(posterBitmap));
+            using (var fs = File.Create(tempPng)) encoder.Save(fs);
+
+            var texconv = await EnsureTexconvAsync();
+            var outputDir = GetConfiguredPosterDirectory(_posterBrowserMod);
+            if (string.IsNullOrWhiteSpace(outputDir)) throw new InvalidOperationException("PosterDirectory is not configured.");
+            Directory.CreateDirectory(outputDir);
+
+            var baseName = Path.GetFileNameWithoutExtension(_posterImageEditorSourceFile) + "_Poster";
+            var outputPrefix = Path.Combine(outputDir, SanitizeFileName(baseName));
+            var psi = new ProcessStartInfo
+            {
+                FileName = texconv,
+                Arguments = $"-y -f BC7_UNORM -m 0 -w {outW} -h {outH} -o \"{outputDir}\" \"{tempPng}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using var process = Process.Start(psi) ?? throw new InvalidOperationException("Could not start texconv.exe.");
+            var stderr = await process.StandardError.ReadToEndAsync();
+            var stdout = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) throw new InvalidOperationException(string.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
+
+            var generated = Path.Combine(outputDir, Path.GetFileNameWithoutExtension(tempPng) + ".png");
+            var desired = outputPrefix + ".png";
+            if (File.Exists(generated)) File.Move(generated, desired, true);
+            TryDeleteFile(tempPng);
+            PosterImageEditorStatus.Text = L("Saved {0} × {1} PNG poster.", outW, outH);
+            await ViewPosterImagesAsync(_posterBrowserMod);
+        }
+        catch (Exception ex)
+        {
+            PosterImageEditorStatus.Text = L("Could not create poster: {0}", ex.Message);
+            MessageBox.Show(this, PosterImageEditorStatus.Text, L("Image Editor"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { SetOperationBusy(false); }
+    }
+
+    private void PosterBrowserBackButton_Click(object sender, RoutedEventArgs e)
+    {
+        ClosePosterBrowser();
+    }
+
+    private void PosterBrowserAddButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod != null)
+            _ = AddPosterImagesAsync(_posterBrowserMod);
+    }
+
+    private void PosterBrowserOpenFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod != null)
+            OpenConfiguredPosterDirectory(_posterBrowserMod);
+    }
+
+    private void ClosePosterBrowser()
+    {
+        _posterBrowserMod = null;
+        _posterBrowserDirectory = null;
+        _posterBrowserFiles.Clear();
+        _posterBrowserImageControls.Clear();
+        _posterBrowserLoading.Clear();
+        _posterBrowserSelectedLoadCts?.Cancel();
+        _posterSearchCts?.Cancel();
+        _posterSearchResults.Clear();
+        if (!string.IsNullOrWhiteSpace(_posterSearchCacheDirectory))
+            TryDeleteDirectory(_posterSearchCacheDirectory);
+        _posterSearchCacheDirectory = null;
+        _posterBrowserSelectedFile = null;
+        if (PosterBrowserSelectedPanel != null)
+            PosterBrowserSelectedPanel.Visibility = Visibility.Collapsed;
+        SetPosterBrowserListInteractivity(true);
+        _mode = "mods";
+        UpdateMode();

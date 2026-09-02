@@ -1,0 +1,31 @@
+# .NET / Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+
+# Local credentials
+nexus_api_key.dat
+**/nexus_api_key.dat
+
+# Local downloads
+_downloads/
+**/_downloads/
+
+# Local secrets/configuration
+.env
+.env.*
+secrets.json
+*secrets*.json
+*credentials*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS
+Thumbs.db
+.DS_Store

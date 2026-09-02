@@ -1,0 +1,817 @@
+        menu.IsOpen = true;
+    }
+
+    private void DeletePakGroup(PakModGroup group)
+    {
+        if (MessageBox.Show(L("Delete mod '{0}' and all of its files?\n\nThis cannot be undone.", group.Name), L("Delete Mod"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            var data = LoadNexusMetadata();
+            foreach (var mod in group.Mods)
+            {
+                File.Delete(mod.Path);
+                data.Remove(PakMetadataKey(mod.Path));
+            }
+            SaveNexusMetadata(data);
+            RefreshModManager();
+        }
+        catch (Exception ex) { MessageBox.Show(ex.Message, L("Mod Manager"), MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void UnlinkPakGroup(PakModGroup group)
+    {
+        var data = LoadNexusMetadata();
+        foreach (var mod in group.Mods) data.Remove(PakMetadataKey(mod.Path));
+        SaveNexusMetadata(data);
+        RefreshModManager();
+    }
+
+    private void PopulateModList(ListBox list, IEnumerable<ModEntry> mods, bool isPak, Dictionary<string, NexusModMetadata>? metadataCache = null)
+    {
+        list.Items.Clear();
+        var metadata = metadataCache ?? _modListMetadataCache ?? LoadNexusMetadata();
+        foreach (var mod in mods)
+            list.Items.Add(CreateModRow(mod, metadata));
+    }
+
+    private void PopulatePendingModList(ListBox list, IEnumerable<PendingModEntry> mods)
+    {
+        foreach (var mod in mods)
+            list.Items.Add(CreatePendingModRow(mod));
+    }
+
+    private string GetModVersionStatusText(string installed, string latest)
+    {
+        if (string.IsNullOrWhiteSpace(installed) && string.IsNullOrWhiteSpace(latest))
+            return L("Version Unknown");
+
+        // Do not append "- Unknown", "- Latest", or "- Outdated".
+        // If there is no installed version, the known latest version is still
+        // useful and should be displayed plainly.
+        if (string.IsNullOrWhiteSpace(installed))
+            return L("Version {0}", latest);
+
+        return L("Version {0}", installed);
+    }
+
+    private sealed class PosterSearchResult
+    {
+        public required string SourceUrl { get; init; }
+        public required string LocalPath { get; init; }
+        public string? SourcePage { get; init; }
+        public int Width { get; init; }
+        public int Height { get; init; }
+        public double Aspect => Width > 0 ? (double)Height / Width : 0;
+    }
+
+    private readonly List<PosterSearchResult> _posterSearchResults = new();
+    private CancellationTokenSource? _posterSearchCts;
+    private string? _posterSearchCacheDirectory;
+    private WebView2? _posterSearchWebView;
+
+    private ModEntry? _posterBrowserMod;
+    private string? _posterBrowserDirectory;
+    private List<string> _posterBrowserFiles = new();
+    private readonly Dictionary<string, Image> _posterBrowserImageControls = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _posterBrowserLoading = new(StringComparer.OrdinalIgnoreCase);
+    private string? _posterBrowserSelectedFile;
+    private CancellationTokenSource? _posterBrowserSelectedLoadCts;
+    private string? _posterImageEditorSourceFile;
+    private BitmapSource? _posterImageEditorSource;
+    private Point _posterImageEditorDragStart;
+    private Point _posterImageEditorOffset;
+    private Point _posterImageEditorStartOffset;
+    private bool _posterImageEditorDragging;
+
+    private sealed class PosterRules
+    {
+        public string? PosterDirectory { get; init; }
+        public int? MaxFiles { get; init; }
+        public bool? UseSubDirectories { get; init; }
+        public HashSet<string> SupportedExtensions { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+        public double? MinAspect { get; init; }
+        public double? MaxAspect { get; init; }
+        public bool? RequiresPortrait { get; init; }
+    }
+
+    private static string GetPosterValidationTemplate()
+    {
+        try
+        {
+            var resource = Application.GetResourceStream(new Uri("pack://application:,,,/RetroRewindModhub;component/invalid.txt", UriKind.Absolute));
+            if (resource != null)
+            {
+                using var reader = new StreamReader(resource.Stream);
+                return reader.ReadToEnd().Trim();
+            }
+        }
+        catch { }
+
+        return "{Mod_Name_Here} Requires portrait images.\n\nInvalid Resolution ({The_Images_Resolution}) Detected!\n\nInvalid Aspect Ratio ({The_Images_Aspect_Ratio}) Detected!\nExpected Aspect Ratio: {Mods_Minimum} / {Mods_maximum}\n\nInvalid File Format ({The_Images_Extension}) Detected!\nExpected File Format: {Mods_Excepted_Extensions}";
+    }
+
+    private static string FormatPosterValidationReason(ModEntry? mod, PosterRules rules, string path, int width, int height, double aspect, bool invalidResolution, bool invalidAspect, bool invalidFormat, bool invalidOrientation)
+    {
+        var template = GetPosterValidationTemplate();
+        var modName = mod?.Name ?? "This mod";
+        var resolution = width > 0 && height > 0 ? $"{width}x{height}" : "Unavailable";
+        var aspectText = width > 0 && height > 0 ? aspect.ToString("0.###", CultureInfo.InvariantCulture) : "Unavailable";
+        var minText = rules.MinAspect?.ToString("0.###", CultureInfo.InvariantCulture) ?? "Not specified";
+        var maxText = rules.MaxAspect?.ToString("0.###", CultureInfo.InvariantCulture) ?? "Not specified";
+        var extensions = rules.SupportedExtensions.Count > 0
+            ? string.Join(", ", rules.SupportedExtensions.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+            : "Not specified";
+
+        var lines = template.Replace("{Mod_Name_Here}", modName, StringComparison.Ordinal)
+            .Replace("{The_Images_Resolution}", resolution, StringComparison.Ordinal)
+            .Replace("{The_Images_Aspect_Ratio}", aspectText, StringComparison.Ordinal)
+            .Replace("{Mods_Minimum}", minText, StringComparison.Ordinal)
+            .Replace("{Mods_maximum}", maxText, StringComparison.Ordinal)
+            .Replace("{The_Images_Extension}", Path.GetExtension(path).TrimStart('.').ToUpperInvariant(), StringComparison.Ordinal)
+            .Replace("{Mods_Excepted_Extensions}", extensions, StringComparison.Ordinal);
+
+        var sourceLines = lines.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        var output = new List<string>();
+        foreach (var line in sourceLines)
+        {
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith("Invalid Resolution", StringComparison.OrdinalIgnoreCase) && !invalidResolution) continue;
+            if (trimmed.StartsWith("Invalid Aspect Ratio", StringComparison.OrdinalIgnoreCase) && !invalidAspect) continue;
+            if (trimmed.StartsWith("Expected Aspect Ratio", StringComparison.OrdinalIgnoreCase) && !invalidAspect) continue;
+            if (trimmed.StartsWith("Invalid File Format", StringComparison.OrdinalIgnoreCase) && !invalidFormat) continue;
+            if (trimmed.StartsWith("Expected File Format", StringComparison.OrdinalIgnoreCase) && !invalidFormat) continue;
+            if (string.IsNullOrWhiteSpace(trimmed) && output.Count > 0 && string.IsNullOrWhiteSpace(output[^1])) continue;
+            output.Add(line);
+        }
+
+        // The supplied template's first line describes the portrait requirement.
+        // Keep it only when the mod actually declares that orientation rule.
+        if (!invalidOrientation)
+        {
+            output.RemoveAll(line => line.Trim().Contains("Requires portrait images", StringComparison.OrdinalIgnoreCase));
+        }
+
+        return string.Join(Environment.NewLine, output).Trim();
+    }
+
+    private PosterRules ReadPosterRules(ModEntry mod)
+    {
+        var rules = new PosterRules();
+        try
+        {
+            if (mod == null || string.IsNullOrWhiteSpace(mod.Path) || !Directory.Exists(mod.Path))
+                return rules;
+
+            var config = FindModConfig(mod.Path);
+            var configText = config != null && File.Exists(config.Value.path)
+                ? File.ReadAllText(config.Value.path)
+                : string.Empty;
+
+            string? GetConfigString(string key)
+            {
+                var m = Regex.Match(configText, $@"(?m)^\s*{Regex.Escape(key)}\s*=\s*([""'])(.*?)\1\s*,?\s*(?:--.*)?$");
+                return m.Success ? m.Groups[2].Value.Trim().Replace("\\\\", "\\") : null;
+            }
+
+            int? GetConfigInt(string key)
+            {
+                var m = Regex.Match(configText, $@"(?m)^\s*{Regex.Escape(key)}\s*=\s*(-?\d+)");
+                return m.Success && int.TryParse(m.Groups[1].Value, out var v) ? Math.Max(0, v) : null;
+            }
+
+            bool? GetConfigBool(string key)
+            {
+                var m = Regex.Match(configText, $@"(?mi)^\s*{Regex.Escape(key)}\s*=\s*(true|false)\b");
+                return m.Success && bool.TryParse(m.Groups[1].Value, out var v) ? v : null;
+            }
+
+            var posterDirectory = GetConfigString("PosterDirectory");
+            var maxFiles = GetConfigInt("MaxPosterFiles");
+            var useSubdirectories = GetConfigBool("UseSubDirectories");
+
+            string mainLua = string.Empty;
+            var mainCandidates = new[]
+            {
+                Path.Combine(mod.Path, "Scripts", "main.lua"),
+                Path.Combine(mod.Path, "main.lua")
+            };
+            var mainPath = mainCandidates.FirstOrDefault(File.Exists);
+            if (mainPath != null)
+                mainLua = File.ReadAllText(mainPath);
+
+            // Poster-specific values are discovered from the mod's own Lua code.
+            // No poster dimensions or extensions are stored in ModHub.
+            double? GetLuaNumber(string name)
+            {
+                var m = Regex.Match(mainLua, $@"(?m)^\s*(?:local\s+)?{Regex.Escape(name)}\s*=\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\b");
+                return m.Success && double.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
+            }
+
+            var supported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // Extract extension tests from the mod's own supported-poster function.
+            var extMatches = Regex.Matches(mainLua, @"(?i)match\(\s*[""']%\.([a-z0-9]+)\$[""']\s*\)");
+            foreach (Match m in extMatches)
+                supported.Add("." + m.Groups[1].Value);
+
+            bool? portrait = null;
+            var validationFunction = Regex.Match(mainLua, @"(?s)function\s+is_vanilla_poster_aspect\s*\(.*?\nend");
+            if (validationFunction.Success)
+            {
+                // Derive orientation from the actual comparison used by the mod.
+                if (Regex.IsMatch(validationFunction.Value, @"\bh\s*>\s*w\b")) portrait = true;
+                else if (Regex.IsMatch(validationFunction.Value, @"\bw\s*>\s*h\b")) portrait = false;
+            }
+
+            return new PosterRules
+            {
+                PosterDirectory = posterDirectory,
+                MaxFiles = maxFiles,
+                UseSubDirectories = useSubdirectories,
+                SupportedExtensions = supported,
+                MinAspect = GetLuaNumber("POSTER_MIN_ASPECT"),
+                MaxAspect = GetLuaNumber("POSTER_MAX_ASPECT"),
+                RequiresPortrait = portrait
+            };
+        }
+        catch
+        {
+            return rules;
+        }
+    }
+
+    private static string GetPosterSourceDirectory(ModEntry mod)
+    {
+        var documents = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var safeName = SanitizeFileName(mod.Name);
+        if (string.IsNullOrWhiteSpace(safeName)) safeName = "Mod";
+        return Path.Combine(documents, "Retro Rewind Modhub", "Images", safeName);
+    }
+
+    private static string SanitizeFileName(string value)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars()) value = value.Replace(c, '_');
+        return value.Trim();
+    }
+
+    private static string? DetectImageExtension(byte[] bytes, string? mediaType, string url)
+    {
+        if (bytes.Length >= 8 && bytes[0] == 0x89 && bytes[1] == 0x50 && bytes[2] == 0x4E && bytes[3] == 0x47) return ".png";
+        if (bytes.Length >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF) return ".jpg";
+        if (bytes.Length >= 4 && bytes[0] == (byte)'D' && bytes[1] == (byte)'D' && bytes[2] == (byte)'S' && bytes[3] == (byte)' ') return ".png";
+        var ext = Path.GetExtension(url.Split('?')[0]).ToLowerInvariant();
+        if (ext is ".png" or ".jpg" or ".jpeg") return ext == ".jpeg" ? ".jpg" : ext;
+        return mediaType?.ToLowerInvariant() switch { "image/png" => ".png", "image/jpeg" => ".jpg", _ => null };
+    }
+        File.Move(temp, exe, true);
+        return exe;
+    }
+
+    private string? GetConfiguredPosterDirectory(ModEntry mod)
+    {
+        var rules = ReadPosterRules(mod);
+        if (string.IsNullOrWhiteSpace(rules.PosterDirectory))
+            return null;
+        try
+        {
+            return Path.IsPathRooted(rules.PosterDirectory)
+                ? Path.GetFullPath(rules.PosterDirectory)
+                : Path.GetFullPath(Path.Combine(mod.Path, rules.PosterDirectory));
+        }
+        catch { return null; }
+    }
+
+    private static bool TryGetPosterDimensions(string path, out int width, out int height)
+    {
+        width = 0;
+        height = 0;
+        try
+        {
+            var ext = Path.GetExtension(path);
+            if (ext.Equals(".png", StringComparison.OrdinalIgnoreCase) ||
+                ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                ext.Equals(".jpeg", StringComparison.OrdinalIgnoreCase))
+            {
+                using var stream = File.OpenRead(path);
+                var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+                if (decoder.Frames.Count == 0) return false;
+                width = decoder.Frames[0].PixelWidth;
+                height = decoder.Frames[0].PixelHeight;
+                return width > 0 && height > 0;
+            }
+
+            // DDS dimensions are read from the standard DDS header.
+            if (ext.Equals(".dds", StringComparison.OrdinalIgnoreCase))
+            {
+                using var stream = File.OpenRead(path);
+                using var reader = new BinaryReader(stream);
+                if (stream.Length < 20 || reader.ReadUInt32() != 0x20534444) return false; // "DDS "
+                reader.ReadUInt32(); // header size
+                reader.ReadUInt32(); // flags
+                height = checked((int)reader.ReadUInt32());
+                width = checked((int)reader.ReadUInt32());
+                return width > 0 && height > 0;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    private static bool TryGetPosterDimensions(string path, out int width, out int height, out double aspect)
+    {
+        aspect = 0;
+        if (!TryGetPosterDimensions(path, out width, out height))
+            return false;
+        aspect = width > 0 ? (double)height / width : 0;
+        return width > 0 && height > 0;
+    }
+
+    private static bool TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path)) Directory.Delete(path, true);
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private static bool IsSupportedPosterExtension(string path, PosterRules rules)
+        => rules.SupportedExtensions.Count > 0 && rules.SupportedExtensions.Contains(Path.GetExtension(path));
+
+    private bool IsValidPosterImage(string path, PosterRules rules, out string reason, ModEntry? mod = null)
+    {
+        reason = string.Empty;
+        var extensionValid = IsSupportedPosterExtension(path, rules);
+        var dimensionsReadable = TryGetPosterDimensions(path, out var width, out var height);
+        var aspect = width > 0 ? (double)height / width : 0;
+        var invalidFormat = !extensionValid;
+        var invalidResolution = !dimensionsReadable;
+        var invalidOrientation = rules.RequiresPortrait == true && dimensionsReadable && height <= width
+            || rules.RequiresPortrait == false && dimensionsReadable && width <= height;
+        var invalidAspect = dimensionsReadable &&
+            ((rules.MinAspect.HasValue && aspect < rules.MinAspect.Value) ||
+             (rules.MaxAspect.HasValue && aspect > rules.MaxAspect.Value));
+
+        if (invalidFormat || invalidResolution || invalidOrientation || invalidAspect)
+        {
+            reason = FormatPosterValidationReason(mod, rules, path, width, height, aspect, invalidResolution, invalidAspect, invalidFormat, invalidOrientation);
+            return false;
+        }
+
+        return true;
+    }
+
+    private int CountValidPosters(string directory, PosterRules rules, ModEntry? mod = null)
+    {
+        if (!Directory.Exists(directory)) return 0;
+        var option = rules.UseSubDirectories == true ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+        var count = 0;
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory, "*.*", option))
+                if (IsValidPosterImage(file, rules, out _, mod)) count++;
+        }
+        catch { }
+        return count;
+    }
+
+    private static string BuildPosterOpenFileFilter(PosterRules rules)
+    {
+        if (rules.SupportedExtensions.Count == 0)
+            return "All files|*.*";
+        var patterns = string.Join(";", rules.SupportedExtensions.OrderBy(x => x).Select(x => "*" + x));
+        return $"Supported poster images|{patterns}|All files|*.*";
+    }
+
+    private void OpenConfiguredPosterDirectory(ModEntry mod)
+    {
+        var directory = GetConfiguredPosterDirectory(mod);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            MessageBox.Show(this,
+                L("This mod does not have a valid PosterDirectory configured."),
+                L("Open Posters"),
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            if (!Directory.Exists(directory))
+                Directory.CreateDirectory(directory);
+
+            OpenFolder(directory);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                L("Could not open the Posters folder.\n\n{0}", ex.Message),
+                L("Open Posters"),
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private async Task AddPosterImagesAsync(ModEntry mod)
+    {
+        var staging = GetPosterSourceDirectory(mod);
+        try
+        {
+            Directory.CreateDirectory(staging);
+            var picturesDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+            var dialog = new OpenFileDialog
+            {
+                Title = L("Add Poster Images"),
+                Filter = L("Image Files|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp;*.tif;*.tiff|All Files|*.*"),
+                Multiselect = true,
+                CheckFileExists = true,
+                CheckPathExists = true,
+                InitialDirectory = !string.IsNullOrWhiteSpace(picturesDirectory) && Directory.Exists(picturesDirectory) ? picturesDirectory : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+            };
+            if (dialog.ShowDialog(this) != true || dialog.FileNames.Length == 0) return;
+            SetOperationBusy(true, L("Adding images…"), null, L("Copying {0} source image(s) into the mod's image workspace.", dialog.FileNames.Length));
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+            var added = 0; var skipped = 0;
+            foreach (var source in dialog.FileNames)
+            {
+                var ext = Path.GetExtension(source).ToLowerInvariant();
+                if (ext is not ".png" and not ".jpg" and not ".jpeg" and not ".bmp" and not ".gif" and not ".webp" and not ".tif" and not ".tiff") { skipped++; continue; }
+                var dest = Path.Combine(staging, Path.GetFileName(source));
+                if (File.Exists(dest)) dest = Path.Combine(staging, Path.GetFileNameWithoutExtension(source) + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture) + ext);
+                File.Copy(source, dest, false); added++;
+            }
+            SetOperationBusy(false);
+            await ViewPosterImagesAsync(mod);
+            MessageBox.Show(this, L("Added {0} source image(s). {1} file(s) were skipped. Invalid/source images can now be edited into posters.", added, skipped), L("Add Images"), MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            SetOperationBusy(false);
+            MessageBox.Show(this, L("Could not add images.\n\n{0}", ex.Message), L("Add Images"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private sealed class PosterBrowserCard
+    {
+        public required string FilePath { get; init; }
+        public required Border Card { get; init; }
+        public required Image Preview { get; init; }
+    }
+
+    private void PosterBrowserSearchButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod == null)
+            return;
+
+        OpenPosterSearch(_posterBrowserMod);
+    }
+
+    private void OpenPosterSearch(ModEntry mod)
+    {
+        _posterSearchCts?.Cancel();
+        _posterSearchCts = new CancellationTokenSource();
+        _posterSearchResults.Clear();
+
+        if (PosterSearchResultsPanel != null)
+            PosterSearchResultsPanel.Children.Clear();
+
+        if (PosterSearchQueryTextBox != null)
+            PosterSearchQueryTextBox.Text = mod.Name;
+
+        _mode = "poster_search";
+        _posterBrowserMod = mod;
+        _posterBrowserDirectory = GetConfiguredPosterDirectory(mod);
+        UpdateMode();
+    }
+
+    private async void PosterSearchGo_Click(object? sender, RoutedEventArgs e)
+    {
+        await RunPosterSearchAsync();
+    }
+
+    private async void PosterSearchQueryTextBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            await RunPosterSearchAsync();
+        }
+    }
+
+    private static string? DetectPosterImageExtension(byte[] data, string? mediaType, string url)
+    {
+        if (data.Length >= 8 && data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47) return ".png";
+        if (data.Length >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) return ".jpg";
+        if (data.Length >= 4 && data[0] == 0x44 && data[1] == 0x44 && data[2] == 0x53 && data[3] == 0x20) return ".png";
+        var type = mediaType?.ToLowerInvariant();
+        if (type == "image/png") return ".png";
+        if (type == "image/jpeg" || type == "image/jpg") return ".jpg";
+        if (type == "image/dds") return ".png";
+        var ext = Path.GetExtension(Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.AbsolutePath : url).ToLowerInvariant();
+        return ext == ".jpeg" ? ".jpg" : (ext is ".png" or ".jpg" ? ext : null);
+    }
+
+    private async Task RunPosterSearchAsync()
+    {
+        var mod = _posterBrowserMod;
+        if (mod == null || PosterSearchQueryTextBox == null || PosterSearchResultsPanel == null)
+            return;
+
+        var query = PosterSearchQueryTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(query))
+            return;
+
+        var rules = ReadPosterRules(mod);
+        _posterSearchCts?.Cancel();
+        _posterSearchCts = new CancellationTokenSource();
+        var token = _posterSearchCts.Token;
+
+        PosterSearchResultsPanel.Children.Clear();
+        PosterSearchStatus.Text = L("Searching Google Images and checking results against this mod's poster rules…");
+
+        SetOperationBusy(true, L("Searching posters…"), null, L("Finding images and validating them against the installed mod."));
+        await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+        try
+        {
+            _posterSearchCacheDirectory = Path.Combine(Path.GetTempPath(), "RetroRewindModHub", "PosterSearch", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_posterSearchCacheDirectory);
+
+            if (_posterSearchWebView == null)
+            {
+                _posterSearchWebView = new WebView2
+                {
+                    Visibility = Visibility.Collapsed,
+                    Width = 1,
+                    Height = 1
+                };
+                _posterSearchWebView.NavigationCompleted += PosterSearchWebView_NavigationCompleted;
+                if (PosterSearchHost != null)
+                    PosterSearchHost.Children.Add(_posterSearchWebView);
+            }
+
+            await _posterSearchWebView.EnsureCoreWebView2Async();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Handler(object? s, CoreWebView2NavigationCompletedEventArgs e) => tcs.TrySetResult(e.IsSuccess);
+            _posterSearchWebView.NavigationCompleted += Handler;
+
+            var url = "https://www.google.com/search?tbm=isch&q=" + Uri.EscapeDataString(query);
+            _posterSearchWebView.CoreWebView2.Navigate(url);
+            await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(15), token));
+            _posterSearchWebView.NavigationCompleted -= Handler;
+
+            if (token.IsCancellationRequested)
+                return;
+
+            var script = """
+                (() => {
+                    const out = [];
+                    const seen = new Set();
+                    const add = (value) => {
+                        if (!value) return;
+                        try {
+                            value = new URL(value, location.href).href;
+                            value = value.replace(/\\u003d/gi, '=').replace(/\\u0026/gi, '&').replace(/\\u002f/gi, '/');
+                        } catch { return; }
+                        if (!/^https?:/i.test(value) || seen.has(value)) return;
+                        seen.add(value);
+                        out.push(value);
+                    };
+
+                    // Current Google Images layouts do not always expose /imgres links.
+                    // Collect original URLs from links, image data attributes, and the
+                    // embedded result JSON used to build the page.
+                    for (const a of document.querySelectorAll('a[href]')) {
+                        try {
+                            const u = new URL(a.href, location.href);
+                            const original = u.searchParams.get('imgurl');
+                            if (original) add(original);
+                        } catch {}
+                        if (out.length >= 120) break;
+                    }
+
+                    if (out.length < 120) {
+                        for (const img of document.images) {
+                            for (const value of [
+                                img.getAttribute('data-iurl'),
+                                img.getAttribute('data-original'),
+                                img.getAttribute('data-fullres'),
+                                img.getAttribute('data-src'),
+                                img.getAttribute('data-url')
+                            ]) add(value);
+                            if (out.length >= 120) break;
+                        }
+                    }
+
+                    if (out.length < 120) {
+                        const decode = (v) => v
+                            .replace(/\\u003d/gi, '=')
+                            .replace(/\\u0026/gi, '&')
+                            .replace(/\\u002f/gi, '/')
+                            .replace(/\\u003f/gi, '?')
+                            .replace(/\\u0025/gi, '%');
+                        for (const script of document.scripts) {
+                            const text = script.textContent || '';
+                            const matches = text.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
+                            for (const value of matches) {
+                                const decoded = decode(value);
+                                // Prefer external image hosts, but allow Google-hosted
+                                // originals when their URL looks like an actual image.
+                                if (!/(google|gstatic)\.com/i.test(decoded) || /\.(?:png|jpe?g|)(?:[?#]|$)/i.test(decoded))
+                                    add(decoded);
+                                if (out.length >= 120) break;
+                            }
+                            if (out.length >= 120) break;
+                        }
+                    }
+
+                    return out;
+                })()
+                """;
+
+            var raw = await _posterSearchWebView.ExecuteScriptAsync(script);
+            var candidates = JsonSerializer.Deserialize<List<string>>(raw ?? "null") ?? new List<string>();
+
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 RetroRewindModHub");
+
+            var accepted = 0;
+            var attempted = 0;
+            var staging = GetPosterSourceDirectory(mod);
+            Directory.CreateDirectory(staging);
+
+            foreach (var imageUrl in candidates.Distinct(StringComparer.OrdinalIgnoreCase).Take(80))
+            {
+                token.ThrowIfCancellationRequested();
+                attempted++;
+                try
+                {
+                    using var response = await client.GetAsync(imageUrl, HttpCompletionOption.ResponseHeadersRead, token);
+                    if (!response.IsSuccessStatusCode) continue;
+                    var bytes = await response.Content.ReadAsByteArrayAsync(token);
+                    var extension = DetectImageExtension(bytes, response.Content.Headers.ContentType?.MediaType, imageUrl);
+                    if (extension == null) continue;
+                    var safeName = SanitizeFileName(Path.GetFileNameWithoutExtension(new Uri(imageUrl).AbsolutePath));
+                    if (string.IsNullOrWhiteSpace(safeName)) safeName = "Downloaded_Image";
+                    var destination = Path.Combine(staging, safeName + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture) + extension);
+                    await File.WriteAllBytesAsync(destination, bytes, token);
+                    accepted++;
+                    AddPosterSearchResultCard(new PosterSearchResult { SourceUrl = imageUrl, LocalPath = destination, Width = 0, Height = 0 }, mod);
+                }
+                catch { }
+                if (accepted >= 40) break;
+            }
+            PosterSearchStatus.Text = L("{0} image(s) downloaded from {1} candidate(s). Invalid images can be edited in the Poster Browser.", accepted, attempted);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            PosterSearchStatus.Text = L("Search failed: {0}", ex.Message);
+        }
+        finally
+        {
+            SetOperationBusy(false);
+        }
+    }
+
+    private void AddPosterSearchResultCard(PosterSearchResult result, ModEntry mod)
+    {
+        if (PosterSearchResultsPanel == null)
+            return;
+
+        var card = new Border
+        {
+            Width = 190,
+            Height = 270,
+            Margin = new Thickness(6),
+            Padding = new Thickness(8),
+            Background = (Brush)Resources["CardBrush"],
+            BorderBrush = (Brush)Resources["BorderBrush"],
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(7),
+            Cursor = Cursors.Hand
+        };
+
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(210) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var image = new Image { Stretch = Stretch.Uniform, Source = LoadPosterThumbnail(result.LocalPath) };
+        Grid.SetRow(image, 0);
+        grid.Children.Add(image);
+
+        var info = new TextBlock
+        {
+            Text = $"{result.Width} × {result.Height}",
+            Foreground = (Brush)Resources["SecondaryBrush"],
+            Margin = new Thickness(0, 6, 0, 4),
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        Grid.SetRow(info, 1);
+        grid.Children.Add(info);
+
+        var add = new Button
+        {
+            Content = L("Add to Images"),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Style = (Style)Resources["AccentButtonStyle"]
+        };
+        add.Click += async (_, _) => { await Dispatcher.InvokeAsync(async () => await ViewPosterImagesAsync(mod)); };
+        Grid.SetRow(add, 2);
+        grid.Children.Add(add);
+
+        card.Child = grid;
+        PosterSearchResultsPanel.Children.Add(card);
+    }
+
+    private async Task AddPosterSearchResultAsync(PosterSearchResult result, ModEntry mod)
+    {
+        var directory = GetConfiguredPosterDirectory(mod);
+        if (string.IsNullOrWhiteSpace(directory) || !File.Exists(result.LocalPath))
+            return;
+
+        try
+        {
+            SetOperationBusy(true, L("Adding poster…"), null, L("Copying the validated image into the mod's Posters folder."));
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+
+            var rules = ReadPosterRules(mod);
+            var currentCount = CountValidPosters(directory, rules, mod);
+            if (rules.MaxFiles.HasValue && rules.MaxFiles.Value > 0 && currentCount >= rules.MaxFiles.Value)
+            {
+                MessageBox.Show(this, L("The mod's maximum poster limit has been reached."), L("Add Poster"), MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var extension = Path.GetExtension(result.LocalPath);
+            var name = "Poster_" + DateTime.Now.ToString("yyyyMMdd_HHmmssfff", CultureInfo.InvariantCulture) + extension;
+            var destination = Path.Combine(directory, name);
+            File.Copy(result.LocalPath, destination, false);
+
+            MessageBox.Show(this, L("Poster added successfully."), L("Add Poster"), MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, L("Could not add the poster.\n\n{0}", ex.Message), L("Add Poster"), MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            SetOperationBusy(false);
+        }
+    }
+
+    private static ImageSource? LoadPosterThumbnail(string path)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            using var ms = new MemoryStream(bytes);
+            var source = new BitmapImage();
+            source.BeginInit();
+            source.CacheOption = BitmapCacheOption.OnLoad;
+            source.StreamSource = ms;
+            source.EndInit();
+            source.Freeze();
+            return source;
+        }
+        catch { return null; }
+    }
+
+    private void PosterSearchBackButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_posterBrowserMod != null)
+            _ = ViewPosterImagesAsync(_posterBrowserMod);
+        else
+            ClosePosterBrowser();
+    }
+
+    private void PosterSearchWebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e) { }
+
+    private async Task ViewPosterImagesAsync(ModEntry mod)
+    {
+        var directory = GetConfiguredPosterDirectory(mod);
+        if (string.IsNullOrWhiteSpace(directory))
+            return;
+
+        _posterBrowserMod = mod;
+        _posterBrowserDirectory = directory;
+        _posterBrowserFiles.Clear();
+        _posterBrowserImageControls.Clear();
+        _posterBrowserLoading.Clear();
+        _posterBrowserSelectedFile = null;
+        _posterBrowserSelectedLoadCts?.Cancel();
+        SetPosterBrowserListInteractivity(true);
+
+        try

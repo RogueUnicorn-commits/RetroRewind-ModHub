@@ -1,0 +1,9 @@
+{Mod_Name_Here} Requires portrait images.
+
+Invalid Resolution ({The_Images_Resolution}) Detected!
+
+Invalid Aspect Ratio ({The_Images_Aspect_Ratio}) Detected!
+Expected Aspect Ratio: {Mods_Minimum} / {Mods_maximum}  
+
+Invalid File Format ({The_Images_Extension}) Detected!
+Expected File Format: {Mods_Excepted_Extensions}
