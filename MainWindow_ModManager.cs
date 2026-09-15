@@ -61,7 +61,6 @@ public partial class MainWindow : Window
         var dialogOriginalPalette = _selectedPalette;
         var dialogOriginalSaveFolder = _saveFolderPath;
         var dialogOriginalModsFolder = _modsFolderPath;
-        var dialogOriginalNexusKey = _nexusApiKey;
         var dialogOriginalShowUe4ssDefaults = _showUe4ssDefaultMods;
         var dialogOriginalPowerSaveMode = _powerSaveMode;
         var dialogOriginalAutoStart = _autoStartWithWindowsLogin;
@@ -85,7 +84,6 @@ public partial class MainWindow : Window
             _selectedFont = dialogOriginalFont;
             _saveFolderPath = dialogOriginalSaveFolder;
             _modsFolderPath = dialogOriginalModsFolder;
-            _nexusApiKey = dialogOriginalNexusKey;
             _showUe4ssDefaultMods = dialogOriginalShowUe4ssDefaults;
             UpdateUe4ssSpecialFoldersButtons();
             _powerSaveMode = dialogOriginalPowerSaveMode;
@@ -673,96 +671,42 @@ public partial class MainWindow : Window
 
         // NEXUS TAB
         var nexusPanel = new StackPanel { Margin = new Thickness(18), MaxWidth = 900 };
-        nexusPanel.Children.Add(MakeSectionLabel("Nexus API"));
-        var nexusKey = new PasswordBox
+        nexusPanel.Children.Add(MakeSectionLabel("Nexus Mods"));
+        nexusPanel.Children.Add(new TextBlock
         {
-            Password = _nexusApiKey,
-            Height = 34,
-            Background = inputBrush,
+            Text = L("Personal Nexus Mods API keys are not supported by Retro Rewind: ModHub. Nexus application authentication will be enabled after the application is registered and Nexus provides the approved authentication details."),
             Foreground = labelBrush,
-            BorderBrush = borderBrush,
-            Padding = new Thickness(8, 5, 8, 5),
-            VerticalContentAlignment = VerticalAlignment.Center
-        };
-        nexusPanel.Children.Add(nexusKey);
-        var nexusHelp = new TextBlock
-        {
-            Text = L("Your Nexus Mods API key is stored securely on this PC."),
-            Foreground = labelBrush,
-            Opacity = 0.75,
+            Opacity = 0.85,
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 18)
-        };
-        nexusPanel.Children.Add(nexusHelp);
-
-        var nexusConnectionButton = new Button
+        });
+        var nexusInfoButton = new Button
         {
-            Content = string.IsNullOrWhiteSpace(_nexusApiKey) ? L("Connect to Nexus") : L("Disconnect from Nexus"),
+            Content = L("Open Nexus Mods"),
             Width = 230,
             Height = 36,
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(0, 0, 0, 12),
             Style = (Style)Resources["SettingsButtonStyle"]
         };
-        nexusConnectionButton.Click += async (_, _) =>
+        nexusInfoButton.Click += (_, _) =>
         {
-            nexusConnectionButton.IsEnabled = false;
             try
             {
-                if (!string.IsNullOrWhiteSpace(_nexusApiKey))
+                Process.Start(new ProcessStartInfo
                 {
-                    _nexusApiKey = string.Empty;
-                    nexusKey.Password = string.Empty;
-                    NexusSecretStore.Save(null);
-                    nexusConnectionButton.Content = L("Connect to Nexus");
-                    nexusHelp.Text = L("Disconnected from Nexus Mods. Your stored API key has been removed from this PC.");
-                    ClearNexusHomeAccountUi(L("Not connected"));
-                }
-                else
-                {
-                    const string nexusApiKeysUrl = "https://www.nexusmods.com/settings/api-keys";
-                    var result = MessageBox.Show(
-                        this,
-                        L("To connect Retro Rewind: ModHub to Nexus Mods:\n\n" +
-                          "1. Click Yes to open your Nexus Mods API Keys page.\n" +
-                          "2. Scroll to the bottom of the page.\n" +
-                          "3. Find your **Personal API Key** and copy it.\n" +
-                          "4. Paste the key into the Nexus API box here.\n" +
-                          "5. Select Save Settings.\n\n" +
-                          "Do you want to open the Nexus Mods API Keys page now?"),
-                        L("Nexus API Key"),
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Information);
-
-                    if (result == MessageBoxResult.Yes)
-                    {
-                        try
-                        {
-                            Process.Start(new ProcessStartInfo
-                            {
-                                FileName = nexusApiKeysUrl,
-                                UseShellExecute = true
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            MessageBox.Show(this, L("Could not open the Nexus Mods API Keys page:\n\n{0}", ex.Message), L("Nexus"), MessageBoxButton.OK, MessageBoxImage.Warning);
-                        }
-                    }
-                }
+                    FileName = "https://www.nexusmods.com/",
+                    UseShellExecute = true
+                });
             }
             catch (Exception ex)
             {
-                nexusHelp.Text = L("Nexus connection failed: {0}", ex.Message);
-                MessageBox.Show(this, nexusHelp.Text, L("Nexus"), MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-            finally
-            {
-                nexusConnectionButton.IsEnabled = true;
+                MessageBox.Show(this, L("Could not open Nexus Mods:\n\n{0}", ex.Message),
+                    L("Nexus"), MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         };
-        ApplySettingsButtonFeedback(nexusConnectionButton, false);
-        nexusPanel.Children.Add(nexusConnectionButton);
+        ApplySettingsButtonFeedback(nexusInfoButton, false);
+        nexusPanel.Children.Add(nexusInfoButton);
 
         var associateLinks = new Button
         {
@@ -887,7 +831,6 @@ public partial class MainWindow : Window
         {
             var selectedSave = saveText.Text.Trim();
             var selectedMods = modTabText.Text.Trim();
-            var selectedNexusKey = nexusKey.Password.Trim();
             var selectedSteamKey = steamKey.Password.Trim();
             if (string.IsNullOrWhiteSpace(selectedSave) || !Directory.Exists(selectedSave))
             {
@@ -925,9 +868,7 @@ public partial class MainWindow : Window
             }
             _saveFolderPath = selectedSave;
             _modsFolderPath = selectedMods;
-            NexusSecretStore.Configure(ModsRoot);
             SteamSecretStore.Configure(ModsRoot);
-            _nexusApiKey = selectedNexusKey;
             _steamApiKey = selectedSteamKey;
             _showUe4ssDefaultMods = modShowUe4ssDefaults.IsChecked == true;
             // The main application is never elevated. Keep the old config key false
@@ -937,7 +878,6 @@ public partial class MainWindow : Window
             var requestedAutoStart = autoStartWithWindowsLogin.IsChecked == true;
             var requestedWindowsNotifications = enableWindowsNotifications.IsChecked == true;
             var requestedCloseToTaskbar = closeToTaskbar.IsChecked == true;
-            NexusSecretStore.Save(_nexusApiKey);
             SteamSecretStore.Save(_steamApiKey);
             var values = LoadConfig();
             values["settings.palette"] = _selectedPalette;

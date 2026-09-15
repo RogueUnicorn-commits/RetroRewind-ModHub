@@ -266,7 +266,6 @@ public partial class MainWindow : Window
         "RetroRewind", "Saved", "SaveGames");
     private string _modsFolderPath = "";
     private string _selectedPalette = "60s Mod";
-    private string _nexusApiKey = "";
     private bool _showUe4ssDefaultMods;
     private string _powerSaveMode = "auto";
     private bool _runAsAdmin;

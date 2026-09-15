@@ -935,20 +935,7 @@ private async Task RefreshNexusHomeAccountAsync(bool force = false)
     _nexusHomeRefreshInProgress = true;
     try
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey)
-            ? NexusSecretStore.Load()
-            : _nexusApiKey;
-
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            ApplyNexusHomeAccountUi();
-            return;
-        }
-
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(12));
 
         using var response = await client.GetAsync("https://api.nexusmods.com/v1/users/validate.json");
         if (!response.IsSuccessStatusCode)
@@ -2683,7 +2670,6 @@ private void ClearNexusHomeAccountUi(string status)
                 : Path.Combine(legacyModhubFolder, "Mods");
         }
         _modsFolderPath = configuredModsFolder;
-        NexusSecretStore.Configure(ModsRoot);
         SteamSecretStore.Configure(ModsRoot);
         try
         {
@@ -2741,7 +2727,6 @@ private void ClearNexusHomeAccountUi(string status)
         _runArguments = values.GetValueOrDefault("settings.runArguments") ?? "";
         _modManagerPath = values.GetValueOrDefault("settings.modManagerPath") ?? "";
         _modManagerType = values.GetValueOrDefault("settings.modManagerType") ?? "";
-        _nexusApiKey = NexusSecretStore.Load() ?? "";
         _steamApiKey = SteamSecretStore.Load() ?? "";
         if (!BundledFontFiles.ContainsKey(_selectedFont))
             _selectedFont = SupportedFonts[0];

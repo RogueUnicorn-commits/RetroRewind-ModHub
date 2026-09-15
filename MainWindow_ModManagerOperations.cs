@@ -5119,10 +5119,12 @@ public partial class MainWindow : Window
 
         try
         {
-            // A remote check is only possible when Nexus credentials are configured.
-            if (!string.IsNullOrWhiteSpace(_nexusApiKey) || !string.IsNullOrWhiteSpace(NexusSecretStore.Load()))
+            // Nexus account authentication is not available through personal API keys.
+            // The registered application authentication flow will be added once Nexus
+            // provides the application's approved OAuth/SSO details.
+            var request = await GetUe4ssMainFileRequestAsync();
+            if (request != null)
             {
-                var request = await GetUe4ssMainFileRequestAsync();
                 _ue4ssLatestVersion = request.Version ?? string.Empty;
                 _ue4ssUpdateAvailable = CompareUe4ssVersions(state.InstalledVersion, request.Version) < 0;
             }
@@ -5245,14 +5247,9 @@ public partial class MainWindow : Window
 
     private async Task<NexusFileDownloadRequest?> GetUe4ssMainFileRequestAsync()
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey))
-            throw new InvalidOperationException(L("Connect to Nexus in Settings before installing UE4SS."));
         const string game = "retrorewindvideostoresimulator";
         const int modId = 52;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Retro Rewind ModHub/1.0.12");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(20));
         using var response = await client.GetAsync($"https://api.nexusmods.com/v1/games/{game}/mods/{modId}/files.json");
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(L("Nexus could not provide the UE4SS file list (HTTP {0}).", (int)response.StatusCode));
@@ -5538,13 +5535,6 @@ public partial class MainWindow : Window
     {
         if (entry.NexusModId > 0) return;
         if (!File.Exists(entry.Path)) return;
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            MessageBox.Show(this, L("Connect to Nexus in Settings before using Query Info."), L("Query Info"), MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
         try
         {
             SetOperationBusy(true, L("Fetching data: {0}…", Path.GetFileName(entry.Path)));
@@ -5600,15 +5590,8 @@ public partial class MainWindow : Window
     private async Task<NexusModMetadata?> QueryNexusByMd5Async(string md5)
     {
         if (string.IsNullOrWhiteSpace(md5)) return null;
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) return null;
-
         const string game = "retrorewindvideostoresimulator";
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Retro Rewind ModHub/1.0.12");
-        if (!string.IsNullOrWhiteSpace(apiKey))
-            client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(30));
 
         var url = $"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(game)}/mods/md5_search/{Uri.EscapeDataString(md5)}.json";
         using var response = await client.GetAsync(url);

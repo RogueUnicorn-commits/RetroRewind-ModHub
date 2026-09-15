@@ -233,9 +233,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-            if (string.IsNullOrWhiteSpace(apiKey)) return;
-            using var client = CreateNexusHttpClient(apiKey);
+            using var client = CreateNexusHttpClient();
             var tracked = await IsNexusModTrackedAsync(client, meta.Game, meta.ModId);
             if (tracked.HasValue)
             {
@@ -255,12 +253,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private static HttpClient CreateNexusHttpClient(string apiKey)
+    private static HttpClient CreateNexusHttpClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
-        return client;
+        return NexusApiClient.Create(TimeSpan.FromSeconds(20));
     }
 
     private static async Task<bool?> IsNexusModTrackedAsync(HttpClient client, string game, int modId)
@@ -280,13 +275,11 @@ public partial class MainWindow : Window
 
     private async Task SetNexusEndorsementAsync(NexusModMetadata meta, bool endorse)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException(L("Connect to Nexus in Settings first."));
         if (!endorse && meta.Endorsed != true)
             throw new InvalidOperationException(L("This mod is not currently marked as endorsed in Retro Rewind."));
         if (endorse && GetNexusEndorsementRemaining(meta) > TimeSpan.Zero)
             throw new InvalidOperationException(L("Nexus requires 15 minutes to pass after download before a mod can be endorsed."));
-        using var client = CreateNexusHttpClient(apiKey);
+        using var client = CreateNexusHttpClient();
         var endpoint = endorse ? "endorse" : "abstain";
         var url = $"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(meta.Game)}/mods/{meta.ModId}/{endpoint}.json";
         using var content = new FormUrlEncodedContent(new[] { new KeyValuePair<string,string>("Version", meta.LatestVersion ?? "") });
@@ -300,9 +293,7 @@ public partial class MainWindow : Window
 
     private async Task SetNexusTrackingAsync(NexusModMetadata meta, bool track)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) throw new InvalidOperationException(L("Connect to Nexus in Settings first."));
-        using var client = CreateNexusHttpClient(apiKey);
+        using var client = CreateNexusHttpClient();
         var url = "https://api.nexusmods.com/v1/user/tracked_mods.json";
         if (track)
         {
@@ -407,22 +398,7 @@ public partial class MainWindow : Window
                 FontSize = 14,
                 Margin = new Thickness(8)
             };
-
-            var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-            if (string.IsNullOrWhiteSpace(apiKey))
-            {
-                host.Content = new TextBlock
-                {
-                    Text = L("Connect to Nexus in Settings to view this content."),
-                    Foreground = (Brush)Resources["SecondaryBrush"],
-                    Margin = new Thickness(8)
-                };
-                return;
-            }
-
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-            client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
+            using var client = NexusApiClient.Create(TimeSpan.FromSeconds(20));
 
             // Always fetch the primary mod endpoint for Description so we retain
             // the original Nexus BBCode/HTML markup. Cached metadata from older
@@ -1696,11 +1672,7 @@ public partial class MainWindow : Window
     private async Task<int> FetchNexusCurrentFileCountAsync(string game, int modId)
     {
         if (string.IsNullOrWhiteSpace(game) || modId <= 0) return -1;
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) return -1;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(15));
         var url = $"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(game)}/mods/{modId}/files.json";
         using var response = await client.GetAsync(url);
         if (!response.IsSuccessStatusCode) return -1;
@@ -1722,15 +1694,14 @@ public partial class MainWindow : Window
         return count;
     }
 
-    private async Task<string> GetNexusPremiumStatusAsync(string apiKey, CancellationToken cancellationToken = default)
+    private async Task<string> GetNexusPremiumStatusAsync(CancellationToken cancellationToken = default)
     {
         if (DateTime.UtcNow - _nexusAccountStatusCheckedUtc < TimeSpan.FromMinutes(10) && !string.Equals(_nexusAccountPremiumStatus, "Unknown", StringComparison.OrdinalIgnoreCase))
             return _nexusAccountPremiumStatus;
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            using var client = NexusApiClient.Create(TimeSpan.FromSeconds(10));
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Retro Rewind ModHub/1.0.11");
-            client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
             using var response = await client.GetAsync("https://api.nexusmods.com/v1/users/me.json", cancellationToken);
             if (!response.IsSuccessStatusCode) return _nexusAccountPremiumStatus;
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
@@ -1787,26 +1758,12 @@ public partial class MainWindow : Window
     private async Task DownloadNexusFileAsync(NexusFileDownloadRequest request)
     {
         if (request.FileId <= 0) throw new InvalidOperationException(L("Nexus did not provide a valid file ID."));
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
         var hasOneTimeKey = !string.IsNullOrWhiteSpace(request.OneTimeKey);
-        if (string.IsNullOrWhiteSpace(apiKey) && !hasOneTimeKey)
-            throw new InvalidOperationException(L("Connect to Nexus in Settings to download files, or start the download from Nexus Mods using Download with Mod Manager."));
-
-        var premiumStatus = string.IsNullOrWhiteSpace(apiKey) ? "Unknown" : await GetNexusPremiumStatusAsync(apiKey);
+        var premiumStatus = "Unknown";
+        if (!hasOneTimeKey)
+            throw new InvalidOperationException(L("Start the download from Nexus Mods using Download with Mod Manager. A personal Nexus API key is no longer supported."));
         string nexusModName = string.IsNullOrWhiteSpace(request.FileName) ? $"Nexus Mod {request.ModId}" : request.FileName;
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            try
-            {
-                var modInfo = await FetchNexusModInfoAsync(request.Game, request.ModId);
-                if (modInfo != null && !string.IsNullOrWhiteSpace(modInfo.Name)) nexusModName = modInfo.Name;
-            }
-            catch { }
-        }
-        using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Retro Rewind ModHub/1.0.11");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
-        client.DefaultRequestHeaders.TryAddWithoutValidation("Accept", "application/json");
+        using var client = NexusApiClient.Create(TimeSpan.FromMinutes(30));
 
         var url = $"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(request.Game)}/mods/{request.ModId}/files/{request.FileId}/download_link.json";
         var queryParts = new List<string>();
@@ -2645,11 +2602,7 @@ public partial class MainWindow : Window
 
     private async Task<NexusModInfo?> FetchNexusModBasicInfoAsync(string game, int modId)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) return null;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(15));
         using var response = await client.GetAsync($"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(game)}/mods/{modId}");
         if (!response.IsSuccessStatusCode) return null;
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
@@ -3711,9 +3664,8 @@ public partial class MainWindow : Window
             var oneTimeKey = query.GetValueOrDefault("key");
             var expires = query.GetValueOrDefault("expires");
             var userId = query.GetValueOrDefault("user_id");
-            var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-            if (string.IsNullOrWhiteSpace(apiKey) && string.IsNullOrWhiteSpace(oneTimeKey))
-                throw new InvalidOperationException(L("Nexus did not provide a usable download key. Connect Nexus in Settings or start the download again from the Nexus Mods Download with Mod Manager button."));
+            if (string.IsNullOrWhiteSpace(oneTimeKey))
+                throw new InvalidOperationException(L("Start the download from Nexus Mods using Download with Mod Manager. Personal Nexus API keys are not supported."));
 
             var request = new NexusFileDownloadRequest(
                 game, modId, fileId, $"NexusMod_{modId}_{fileId}.zip", "Unknown", -1,
@@ -3728,11 +3680,7 @@ public partial class MainWindow : Window
 
     private async Task<NexusModInfo?> FetchNexusModInfoAsync(string game, int modId, CancellationToken cancellationToken = default)
     {
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) return null;
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("RetroRewindModHub/1.0.0");
-        client.DefaultRequestHeaders.TryAddWithoutValidation("apikey", apiKey);
+        using var client = NexusApiClient.Create(TimeSpan.FromSeconds(15));
         var info = new NexusModInfo();
         var url = $"https://api.nexusmods.com/v1/games/{Uri.EscapeDataString(game)}/mods/{modId}";
         using var response = await client.GetAsync(url, cancellationToken);
@@ -3769,8 +3717,6 @@ public partial class MainWindow : Window
         try { _nexusBackgroundCts?.Cancel(); } catch { }
         var nexusCts = new CancellationTokenSource();
         _nexusBackgroundCts = nexusCts;
-        var apiKey = string.IsNullOrWhiteSpace(_nexusApiKey) ? NexusSecretStore.Load() : _nexusApiKey;
-        if (string.IsNullOrWhiteSpace(apiKey)) return;
         var data = LoadNexusMetadata();
         var changed = false;
         foreach (var key in data.Keys.Where(k => !k.StartsWith("_download:", StringComparison.OrdinalIgnoreCase)).ToList())
